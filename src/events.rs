@@ -29,7 +29,7 @@ pub fn log_account_linked_event(platform: &str, handle: &str, account_id: &Accou
 pub fn log_tip_transferred_event(
     platform: &str,
     handle: &str,
-    amount: u128,
+    amount: U128,
     token_type: &str,
     recipient: &AccountId,
 ) {
@@ -45,7 +45,7 @@ pub fn log_tip_transferred_event(
                     {
                         "platform": platform,
                         "handle": handle,
-                        "amount": amount.to_string(),
+                        "amount": amount,
                         "token_type": token_type,
                         "recipient": recipient,
                     }
@@ -59,7 +59,7 @@ pub fn log_tip_transferred_event(
 pub fn log_claim_created_event(
     platform: &str,
     handle: &str,
-    amount: u128,
+    amount: U128,
     token_type: &str,
     tipper: &AccountId,
 ) {
@@ -75,7 +75,7 @@ pub fn log_claim_created_event(
                     {
                         "platform": platform,
                         "handle": handle,
-                        "amount": amount.to_string(),
+                        "amount": amount,
                         "token_type": token_type,
                         "tipper": tipper,
                     }
@@ -89,7 +89,7 @@ pub fn log_claim_created_event(
 pub fn log_claim_processed_event(
     platform: &str,
     handle: &str,
-    amount: u128,
+    amount: U128,
     token_type: &str,
     claimer: &AccountId,
 ) {
@@ -105,7 +105,7 @@ pub fn log_claim_processed_event(
                     {
                         "platform": platform,
                         "handle": handle,
-                        "amount": amount.to_string(),
+                        "amount": amount,
                         "token_type": token_type,
                         "claimer": claimer,
                     }
@@ -119,7 +119,7 @@ pub fn log_claim_processed_event(
 pub fn log_tip_reclaimed_event(
     platform: &str,
     handle: &str,
-    amount: u128,
+    amount: U128,
     token_type: &str,
     tipper: &AccountId,
 ) {
@@ -135,7 +135,7 @@ pub fn log_tip_reclaimed_event(
                     {
                         "platform": platform,
                         "handle": handle,
-                        "amount": amount.to_string(),
+                        "amount": amount,
                         "token_type": token_type,
                         "tipper": tipper,
                     }

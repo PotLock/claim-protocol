@@ -13,7 +13,7 @@ mod token;
 // mod utils;
 
 use crate::events::*;
-use claim::{Claim, ClaimType};
+use claim::{format_claim, Claim, ClaimExternal, ClaimType};
 use proof::ReclaimProof;
 use token::TokenInfo;
 
@@ -24,7 +24,7 @@ const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(10);
 /// Gas for NFT transfers
 const GAS_FOR_NFT_TRANSFER: Gas = Gas::from_tgas(10);
 /// Gas for Reclaim Protocol verification
-const GAS_FOR_RECLAIM_VERIFY: Gas = Gas::from_tgas(20);
+const GAS_FOR_RECLAIM_VERIFY: Gas = Gas::from_tgas(27);
 /// Maximum time allowed between proof generation and submission (5 minutes)
 const MAX_PROOF_AGE: u64 = 5 * 60 * 1_000_000_000;
 /// Claim expiration period (90 days)
@@ -64,7 +64,7 @@ impl SocialHandle {
     }
 
     pub fn to_string(&self) -> String {
-        format!("{:?}:{:?}", self.platform, self.handle)
+        format!("{}:{}", self.platform, self.handle)
     }
 }
 
@@ -78,14 +78,14 @@ pub struct Contract {
     pub reclaim_contract_id: AccountId,
 
     /// Mapping of social media handles to NEAR accounts
-    pub linked_accounts: IterableMap<SocialHandle, AccountId>,
+    pub linked_accounts: IterableMap<String, AccountId>,
 
     pub next_claim_id: ClaimId,
 
     /// Mapping of social media handles to claim IDs
     pub claims_by_id: IterableMap<ClaimId, Claim>,
     /// Pending claims for unlinked accounts
-    pub pending_claims: IterableMap<SocialHandle, IterableSet<ClaimId>>,
+    pub pending_claims: IterableMap<String, IterableSet<ClaimId>>,
 
     /// Supported tokens (FTs and NFTs)
     pub supported_tokens: IterableMap<AccountId, TokenInfo>,
@@ -128,7 +128,9 @@ impl Contract {
 
         let social_handle = SocialHandle::new(platform.clone(), handle.clone());
         require!(
-            !self.linked_accounts.contains_key(&social_handle),
+            !self
+                .linked_accounts
+                .contains_key(&social_handle.to_string()),
             "Handle already linked"
         );
 
@@ -154,7 +156,7 @@ impl Contract {
             env::panic_str("Proof verification failed")
         } else {
             self.linked_accounts
-                .insert(social_handle.clone(), account_id.clone());
+                .insert(social_handle.to_string(), account_id.clone());
             log_account_linked_event(&social_handle.platform, &social_handle.handle, &account_id);
         }
     }
@@ -171,12 +173,12 @@ impl Contract {
 
         let social_handle = SocialHandle::new(platform, handle);
 
-        if let Some(recipient) = self.linked_accounts.get(&social_handle) {
+        if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Direct transfer for linked accounts
             log_tip_transferred_event(
                 &social_handle.platform,
                 &social_handle.handle,
-                amount.as_yoctonear(),
+                amount.as_yoctonear().into(),
                 "NEAR",
                 &recipient,
             );
@@ -193,27 +195,27 @@ impl Contract {
 
     // Internal helper to store claims
     fn store_claim(&mut self, social_handle: SocialHandle, claim: Claim) {
-        let claim_id = self.next_claim_id.clone();
+        let claim_id = self.next_claim_id;
         self.next_claim_id += 1;
-        self.claims_by_id.insert(claim_id.clone(), claim.clone());
+        self.claims_by_id.insert(claim_id, claim.clone());
         let storage_key = StorageKey::ClaimsByHandle {
             platform: social_handle.platform.clone(),
             handle: social_handle.handle.clone(),
         };
 
-        let mut empty_pending_claim: IterableSet<ClaimId> = IterableSet::new(storage_key);
+        let empty_pending_claim: IterableSet<ClaimId> = IterableSet::new(storage_key);
 
         let claim_ids = self
             .pending_claims
-            .get_mut(&social_handle)
-            .unwrap_or_else(|| &mut empty_pending_claim);
+            .entry(social_handle.to_string())
+            .or_insert(empty_pending_claim);
 
         claim_ids.insert(claim_id);
 
         log_claim_created_event(
             &social_handle.platform,
             &social_handle.handle,
-            claim.amount(),
+            claim.amount().into(),
             claim.token_type(),
             claim.tipper(),
         );
@@ -227,7 +229,7 @@ impl Contract {
 
         let account_id = self
             .linked_accounts
-            .get(&social_handle)
+            .get(&social_handle.to_string())
             .unwrap_or_else(|| env::panic_str("Account must be linked before claiming."));
         require!(
             env::predecessor_account_id().eq(account_id),
@@ -235,7 +237,7 @@ impl Contract {
         );
 
         // Process claims if any exist
-        if let Some(claims_ids) = self.pending_claims.get_mut(&social_handle) {
+        if let Some(claims_ids) = self.pending_claims.get_mut(&social_handle.to_string()) {
             if claims_ids.is_empty() {
                 env::panic_str("No pending claims to process.");
             }
@@ -262,7 +264,7 @@ impl Contract {
                         ClaimType::Near => {
                             // NEAR transfer
                             Promise::new(account_id.clone())
-                                .transfer(NearToken::from_yoctonear(claim.amount))
+                                .transfer(claim.amount)
                                 .then(
                                     Self::ext(env::current_account_id())
                                         .with_static_gas(Gas::from_tgas(5))
@@ -359,10 +361,10 @@ impl Contract {
                 social_handle.handle
             ));
         } else if let Some(claim) = self.claims_by_id.get_mut(&claim_id) {
-            if let Some(claim_ids) = self.pending_claims.get_mut(&social_handle) {
+            if let Some(claim_ids) = self.pending_claims.get_mut(&social_handle.to_string()) {
                 claim_ids.remove(&claim_id);
                 if claim_ids.is_empty() {
-                    self.pending_claims.remove(&social_handle);
+                    self.pending_claims.remove(&social_handle.to_string());
                     env::log_str(&format!(
                         "All claims processed for {:?}:{:?}",
                         social_handle.platform, social_handle.handle
@@ -373,7 +375,7 @@ impl Contract {
                     log_tip_reclaimed_event(
                         &social_handle.platform,
                         &social_handle.handle,
-                        claim.amount(),
+                        claim.amount().into(),
                         claim.token_type(),
                         claim.tipper(),
                     );
@@ -382,7 +384,7 @@ impl Contract {
                     log_claim_processed_event(
                         &social_handle.platform,
                         &social_handle.handle,
-                        claim.amount(),
+                        claim.amount().into(),
                         &token_type,
                         &recipient,
                     );
@@ -409,7 +411,7 @@ impl Contract {
 
             match &claim.claim_type {
                 ClaimType::Near => Promise::new(env::predecessor_account_id())
-                    .transfer(NearToken::from_yoctonear(claim.amount))
+                    .transfer(claim.amount)
                     .then(
                         Self::ext(env::current_account_id())
                             .with_static_gas(Gas::from_tgas(5))
@@ -469,6 +471,22 @@ impl Contract {
         } else {
             env::panic_str("No claims found for this handle");
         }
+    }
+
+    pub fn set_reclaim_contract(&mut self, contract_id: AccountId) {
+        require!(
+            env::predecessor_account_id() == self.owner_id,
+            "Only owner can change Reclaim contract"
+        );
+
+        self.reclaim_contract_id = contract_id.clone();
+
+        env::log_str(&format!("Reclaim contract changed to {}", contract_id));
+    }
+
+    /// Get the current Reclaim Protocol contract address
+    pub fn get_reclaim_contract(&self) -> AccountId {
+        self.reclaim_contract_id.clone()
     }
 
     pub fn pause(&mut self) {
@@ -558,7 +576,7 @@ impl Contract {
         let amount_u128 = amount.0;
 
         // If the handle is linked, forward the FT to the linked account
-        if let Some(recipient) = self.linked_accounts.get(&social_handle) {
+        if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Forward the tokens to the recipient
             external::ext_ft::ext(ft_contract_id.clone())
                 .with_attached_deposit(NearToken::from_yoctonear(1))
@@ -572,7 +590,7 @@ impl Contract {
             log_tip_transferred_event(
                 &social_handle.platform,
                 &social_handle.handle,
-                amount_u128,
+                amount_u128.into(),
                 "FT",
                 recipient,
             );
@@ -620,7 +638,7 @@ impl Contract {
         );
 
         // If the handle is linked, forward the NFT to the linked account
-        if let Some(recipient) = self.linked_accounts.get(&social_handle) {
+        if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Forward the NFT to the recipient
             external::ext_nft::ext(nft_contract_id.clone())
                 .with_attached_deposit(NearToken::from_yoctonear(1))
@@ -635,7 +653,7 @@ impl Contract {
             log_tip_transferred_event(
                 &social_handle.platform,
                 &social_handle.handle,
-                0, // NFTs don't have amount
+                0.into(), // NFTs don't have amount
                 "NFT",
                 recipient,
             );
@@ -672,7 +690,8 @@ impl Contract {
 
     pub fn is_linked(&self, platform: String, handle: String) -> bool {
         let social_handle = SocialHandle::new(platform, handle);
-        self.linked_accounts.contains_key(&social_handle)
+        self.linked_accounts
+            .contains_key(&social_handle.to_string())
     }
 
     pub fn get_claim_by_id(&self, claim_id: ClaimId) -> Option<Claim> {
@@ -682,13 +701,15 @@ impl Contract {
     /// Get the linked account for a social handle
     pub fn get_linked_account(&self, platform: String, handle: String) -> Option<AccountId> {
         let social_handle = SocialHandle::new(platform, handle);
-        self.linked_accounts.get(&social_handle).cloned()
+        self.linked_accounts
+            .get(&social_handle.to_string())
+            .cloned()
     }
 
     /// Get the count of pending claims for a social handle
     pub fn get_pending_claims_count(&self, platform: String, handle: String) -> u64 {
         let social_handle = SocialHandle::new(platform, handle);
-        if let Some(claims) = self.pending_claims.get(&social_handle) {
+        if let Some(claims) = self.pending_claims.get(&social_handle.to_string()) {
             claims.len() as u64
         } else {
             0
@@ -702,20 +723,81 @@ impl Contract {
         handle: String,
         from_index: u64,
         limit: u64,
-    ) -> Vec<Claim> {
+    ) -> Vec<ClaimExternal> {
         let social_handle = SocialHandle::new(platform, handle);
 
-        if let Some(claims) = self.pending_claims.get(&social_handle) {
+        if let Some(claim_ids) = self.pending_claims.get(&social_handle.to_string()) {
+            // First collect all claim IDs into a Vec
+            let claim_id_vec: Vec<ClaimId> = claim_ids.iter().cloned().collect();
+
+            // Apply pagination
             let start = from_index as usize;
-            let end = std::cmp::min(start + limit as usize, claims.len() as usize);
+            let end = std::cmp::min(start + limit as usize, claim_id_vec.len());
 
             if start < end {
-                (start..end)
-                    .map(|i| self.claims_by_id.get(&(i as u64)).unwrap().clone())
+                // Map each claim ID to its corresponding claim
+                claim_id_vec[start..end]
+                    .iter()
+                    .map(|claim_id| {
+                        format_claim(claim_id, self.claims_by_id.get(claim_id).unwrap())
+                    })
                     .collect()
             } else {
                 vec![]
             }
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn get_linked_handles(&self, from_index: u64, limit: u64) -> Vec<(String, AccountId)> {
+        let keys = self.linked_accounts.keys().collect::<Vec<_>>();
+        let values = self.linked_accounts.values().collect::<Vec<_>>();
+
+        let start = from_index as usize;
+        let end = std::cmp::min(start + limit as usize, keys.len());
+
+        if start < end {
+            (start..end)
+                .map(|i| (keys[i].clone(), values[i].clone()))
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Get all social handles linked to a specific account
+    pub fn get_handles_by_account(&self, account_id: AccountId) -> Vec<String> {
+        self.linked_accounts
+            .iter()
+            .filter(|(_, linked_account)| **linked_account == account_id)
+            .map(|(handle, _)| handle.clone())
+            .collect()
+    }
+
+    pub fn get_claims_by_tipper(
+        &self,
+        tipper: AccountId,
+        from_index: u64,
+        limit: u64,
+    ) -> Vec<Claim> {
+        let claims: Vec<Claim> = self
+            .claims_by_id
+            .iter()
+            .filter_map(|(_, claim)| {
+                if claim.tipper() == &tipper {
+                    Some(claim.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let start = from_index as usize;
+        let end = std::cmp::min(start + limit as usize, claims.len());
+
+        if start < end {
+            claims[start..end].to_vec()
         } else {
             vec![]
         }
