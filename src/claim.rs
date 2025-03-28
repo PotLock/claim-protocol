@@ -19,6 +19,7 @@ pub struct Claim {
     pub claim_type: ClaimType,
     pub amount: NearToken, // For NEAR and FTs. Ignored for NFTs
     pub tipper: AccountId,
+    pub recipient: String,
     pub timestamp: u64,
     pub expires_at: u64,
     pub claimed: bool,
@@ -31,6 +32,7 @@ pub struct ClaimExternal {
     pub claim_type: String,
     pub amount: U128, // For NEAR and FTs. Ignored for NFTs
     pub tipper: AccountId,
+    pub recipient: String,
     pub timestamp: u64,
     pub expires_at: u64,
     pub claimed: bool,
@@ -50,6 +52,7 @@ pub(crate) fn format_claim(claim_id: &ClaimId, claim: &Claim) -> ClaimExternal {
         claim_type,
         amount: claim.amount.as_yoctonear().into(),
         tipper: claim.tipper.clone(),
+        recipient: claim.recipient.clone(),
         timestamp: claim.timestamp,
         expires_at: claim.expires_at,
         claimed: claim.claimed,
@@ -57,29 +60,41 @@ pub(crate) fn format_claim(claim_id: &ClaimId, claim: &Claim) -> ClaimExternal {
 }
 
 impl Claim {
-    pub fn new_near(tipper: AccountId, amount: u128) -> Self {
+    pub fn new_near(tipper: AccountId, amount: u128, recipient: String) -> Self {
         Self {
             claim_type: ClaimType::Near,
             amount: NearToken::from_yoctonear(amount),
             tipper,
+            recipient,
             timestamp: env::block_timestamp(),
             expires_at: env::block_timestamp() + crate::CLAIM_EXPIRATION_PERIOD,
             claimed: false,
         }
     }
 
-    pub fn new_ft(tipper: AccountId, contract_id: AccountId, amount: u128) -> Self {
+    pub fn new_ft(
+        tipper: AccountId,
+        contract_id: AccountId,
+        amount: u128,
+        recipient: String,
+    ) -> Self {
         Self {
             claim_type: ClaimType::FungibleToken { contract_id },
             amount: NearToken::from_yoctonear(amount),
             tipper,
+            recipient,
             timestamp: env::block_timestamp(),
             expires_at: env::block_timestamp() + crate::CLAIM_EXPIRATION_PERIOD,
             claimed: false,
         }
     }
 
-    pub fn new_nft(tipper: AccountId, contract_id: AccountId, token_id: String) -> Self {
+    pub fn new_nft(
+        tipper: AccountId,
+        contract_id: AccountId,
+        token_id: String,
+        recipient: String,
+    ) -> Self {
         Self {
             claim_type: ClaimType::NonFungibleToken {
                 contract_id,
@@ -87,6 +102,7 @@ impl Claim {
             },
             amount: NearToken::from_yoctonear(0), // Not used for NFTs
             tipper,
+            recipient,
             timestamp: env::block_timestamp(),
             expires_at: env::block_timestamp() + crate::CLAIM_EXPIRATION_PERIOD,
             claimed: false,

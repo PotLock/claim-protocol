@@ -41,7 +41,7 @@ pub const TOKEN_REGISTRATION_FEE: NearToken = NearToken::from_near(1);
 #[derive(BorshStorageKey)]
 pub enum StorageKey {
     LinkedAccounts,
-    PendingClaims,
+    HandleClaims,
     ClaimsByHandle { platform: String, handle: String },
     ClaimsById,
     SupportedTokens,
@@ -84,8 +84,8 @@ pub struct Contract {
 
     /// Mapping of social media handles to claim IDs
     pub claims_by_id: IterableMap<ClaimId, Claim>,
-    /// Pending claims for unlinked accounts
-    pub pending_claims: IterableMap<String, IterableSet<ClaimId>>,
+    /// Claims for unlinked accounts
+    pub handle_claims: IterableMap<String, IterableSet<ClaimId>>,
 
     /// Supported tokens (FTs and NFTs)
     pub supported_tokens: IterableMap<AccountId, TokenInfo>,
@@ -106,7 +106,7 @@ impl Contract {
             linked_accounts: IterableMap::new(StorageKey::LinkedAccounts),
             next_claim_id: 1,
             claims_by_id: IterableMap::new(StorageKey::ClaimsById),
-            pending_claims: IterableMap::new(StorageKey::PendingClaims),
+            handle_claims: IterableMap::new(StorageKey::HandleClaims),
             supported_tokens: IterableMap::new(StorageKey::SupportedTokens),
             paused: false,
         }
@@ -133,6 +133,27 @@ impl Contract {
                 .contains_key(&social_handle.to_string()),
             "Handle already linked"
         );
+
+        match serde_json::from_str::<serde_json::Value>(&proof.claimInfo.context) {
+            Ok(context_json) => {
+                if let Some(extracted_param) = context_json.get("extractedParameters") {
+                    if let Some(screen_name_value) = extracted_param.get("screen_name") {
+                        if let Some(screen_name) = screen_name_value.as_str() {
+                            env::log_str(&format!("screen_name: {}, {}", screen_name, handle));
+                            assert_eq!(
+                                screen_name, handle,
+                                "Proven handle does not match passed handle"
+                            );
+                        }
+                    } else {
+                        env::panic_str("screen_name not found in extractedParameters");
+                    }
+                } else {
+                    env::panic_str("needed params not found");
+                }
+            }
+            Err(_) => env::panic_str("Failed to parse context Json for verification"),
+        }
 
         // Verify proof through Reclaim Protocol
         external::ext_reclaim::ext(self.reclaim_contract_id.clone())
@@ -186,7 +207,11 @@ impl Contract {
             PromiseOrValue::Promise(Promise::new(recipient.clone()).transfer(amount))
         } else {
             // Store as pending claim
-            let claim = Claim::new_near(env::predecessor_account_id(), amount.as_yoctonear());
+            let claim = Claim::new_near(
+                env::predecessor_account_id(),
+                amount.as_yoctonear(),
+                social_handle.to_string(),
+            );
 
             self.store_claim(social_handle, claim);
             PromiseOrValue::Value(())
@@ -203,12 +228,12 @@ impl Contract {
             handle: social_handle.handle.clone(),
         };
 
-        let empty_pending_claim: IterableSet<ClaimId> = IterableSet::new(storage_key);
+        let empty_handle_claim: IterableSet<ClaimId> = IterableSet::new(storage_key);
 
         let claim_ids = self
-            .pending_claims
+            .handle_claims
             .entry(social_handle.to_string())
-            .or_insert(empty_pending_claim);
+            .or_insert(empty_handle_claim);
 
         claim_ids.insert(claim_id);
 
@@ -237,7 +262,7 @@ impl Contract {
         );
 
         // Process claims if any exist
-        if let Some(claims_ids) = self.pending_claims.get_mut(&social_handle.to_string()) {
+        if let Some(claims_ids) = self.handle_claims.get_mut(&social_handle.to_string()) {
             if claims_ids.is_empty() {
                 env::panic_str("No pending claims to process.");
             }
@@ -361,10 +386,10 @@ impl Contract {
                 social_handle.handle
             ));
         } else if let Some(claim) = self.claims_by_id.get_mut(&claim_id) {
-            if let Some(claim_ids) = self.pending_claims.get_mut(&social_handle.to_string()) {
+            if let Some(claim_ids) = self.handle_claims.get_mut(&social_handle.to_string()) {
                 claim_ids.remove(&claim_id);
                 if claim_ids.is_empty() {
-                    self.pending_claims.remove(&social_handle.to_string());
+                    self.handle_claims.remove(&social_handle.to_string());
                     env::log_str(&format!(
                         "All claims processed for {:?}:{:?}",
                         social_handle.platform, social_handle.handle
@@ -596,7 +621,12 @@ impl Contract {
             );
         } else {
             // Store as a claim for later
-            let claim = Claim::new_ft(sender_id, ft_contract_id, amount_u128);
+            let claim = Claim::new_ft(
+                sender_id,
+                ft_contract_id,
+                amount_u128,
+                social_handle.to_string(),
+            );
             self.store_claim(social_handle, claim);
         }
 
@@ -659,7 +689,12 @@ impl Contract {
             );
         } else {
             // Store as a claim for later
-            let claim = Claim::new_nft(sender_id, nft_contract_id, token_id);
+            let claim = Claim::new_nft(
+                sender_id,
+                nft_contract_id,
+                token_id,
+                social_handle.to_string(),
+            );
             self.store_claim(social_handle, claim);
         }
 
@@ -709,8 +744,17 @@ impl Contract {
     /// Get the count of pending claims for a social handle
     pub fn get_pending_claims_count(&self, platform: String, handle: String) -> u64 {
         let social_handle = SocialHandle::new(platform, handle);
-        if let Some(claims) = self.pending_claims.get(&social_handle.to_string()) {
-            claims.len() as u64
+        if let Some(claims) = self.handle_claims.get(&social_handle.to_string()) {
+            claims
+                .iter()
+                .filter(|claim_id| {
+                    if let Some(claim) = self.claims_by_id.get(claim_id) {
+                        !claim.claimed && !claim.is_expired()
+                    } else {
+                        false
+                    }
+                })
+                .count() as u64
         } else {
             0
         }
@@ -726,7 +770,7 @@ impl Contract {
     ) -> Vec<ClaimExternal> {
         let social_handle = SocialHandle::new(platform, handle);
 
-        if let Some(claim_ids) = self.pending_claims.get(&social_handle.to_string()) {
+        if let Some(claim_ids) = self.handle_claims.get(&social_handle.to_string()) {
             // First collect all claim IDs into a Vec
             let claim_id_vec: Vec<ClaimId> = claim_ids.iter().cloned().collect();
 
@@ -738,8 +782,13 @@ impl Contract {
                 // Map each claim ID to its corresponding claim
                 claim_id_vec[start..end]
                     .iter()
-                    .map(|claim_id| {
-                        format_claim(claim_id, self.claims_by_id.get(claim_id).unwrap())
+                    .filter_map(|claim_id| {
+                        let claim = self.claims_by_id.get(claim_id)?;
+                        if !claim.claimed && !claim.is_expired() {
+                            Some(format_claim(claim_id, claim))
+                        } else {
+                            None
+                        }
                     })
                     .collect()
             } else {
@@ -775,18 +824,47 @@ impl Contract {
             .collect()
     }
 
+    // pub fn get_claims_by_tipper(
+    //     &self,
+    //     tipper: AccountId,
+    //     from_index: u64,
+    //     limit: u64,
+    // ) -> Vec<Claim> {
+    //     let claims: Vec<Claim> = self
+    //         .claims_by_id
+    //         .iter()
+    //         .filter_map(|(_, claim)| {
+    //             if claim.tipper() == &tipper {
+    //                 Some(claim.clone())
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //         .collect();
+
+    //     let start = from_index as usize;
+    //     let end = std::cmp::min(start + limit as usize, claims.len());
+
+    //     if start < end {
+    //         claims[start..end].to_vec()
+    //     } else {
+    //         vec![]
+    //     }
+    // }
+
+    // inefficient
     pub fn get_claims_by_tipper(
         &self,
         tipper: AccountId,
         from_index: u64,
         limit: u64,
-    ) -> Vec<Claim> {
-        let claims: Vec<Claim> = self
+    ) -> Vec<ClaimExternal> {
+        let claims: Vec<ClaimExternal> = self
             .claims_by_id
             .iter()
-            .filter_map(|(_, claim)| {
+            .filter_map(|(claim_id, claim)| {
                 if claim.tipper() == &tipper {
-                    Some(claim.clone())
+                    Some(format_claim(claim_id, claim))
                 } else {
                     None
                 }
