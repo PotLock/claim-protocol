@@ -275,13 +275,10 @@ impl Contract {
                 claims_ids.len()
             ));
 
-            let mut expired_claim_ids = Vec::new();
-
             for claim_id in claims_ids.iter().take(MAX_CLAIMS_PER_BATCH).cloned() {
                 if let Some(claim) = self.claims_by_id.get(&claim_id) {
                     if claim.is_expired() {
                         // Track expired claims for removal
-                        expired_claim_ids.push(claim_id);
                         // claims_vector.remove(claim);
                         continue;
                     }
@@ -353,11 +350,6 @@ impl Contract {
                     };
                 }
             }
-            if !expired_claim_ids.is_empty() {
-                for claim_id in expired_claim_ids {
-                    claims_ids.remove(&claim_id);
-                }
-            }
         } else {
             env::log_str("No pending claims found for this handle");
         }
@@ -386,34 +378,24 @@ impl Contract {
                 social_handle.handle
             ));
         } else if let Some(claim) = self.claims_by_id.get_mut(&claim_id) {
-            if let Some(claim_ids) = self.handle_claims.get_mut(&social_handle.to_string()) {
-                claim_ids.remove(&claim_id);
-                if claim_ids.is_empty() {
-                    self.handle_claims.remove(&social_handle.to_string());
-                    env::log_str(&format!(
-                        "All claims processed for {:?}:{:?}",
-                        social_handle.platform, social_handle.handle
-                    ));
-                }
-                // TODO: maybe merge this two events into one? since they emit same params?
-                if reclaim_trf.is_some() {
-                    log_tip_reclaimed_event(
-                        &social_handle.platform,
-                        &social_handle.handle,
-                        claim.amount().into(),
-                        claim.token_type(),
-                        claim.tipper(),
-                    );
-                } else {
-                    claim.claimed = true;
-                    log_claim_processed_event(
-                        &social_handle.platform,
-                        &social_handle.handle,
-                        claim.amount().into(),
-                        &token_type,
-                        &recipient,
-                    );
-                }
+            // TODO: maybe merge this two events into one? since they emit same params?
+            if reclaim_trf.is_some() {
+                log_tip_reclaimed_event(
+                    &social_handle.platform,
+                    &social_handle.handle,
+                    claim.amount().into(),
+                    claim.token_type(),
+                    claim.tipper(),
+                );
+            } else {
+                claim.claimed = true;
+                log_claim_processed_event(
+                    &social_handle.platform,
+                    &social_handle.handle,
+                    claim.amount().into(),
+                    &token_type,
+                    &recipient,
+                );
             }
         }
     }
@@ -876,6 +858,40 @@ impl Contract {
 
         if start < end {
             claims[start..end].to_vec()
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn get_all_claims_for_handle(
+        &self,
+        platform: String,
+        handle: String,
+        from_index: u64,
+        limit: u64,
+    ) -> Vec<ClaimExternal> {
+        let social_handle = SocialHandle::new(platform, handle);
+
+        if let Some(claim_ids) = self.handle_claims.get(&social_handle.to_string()) {
+            // First collect all claim IDs into a Vec
+            let claim_id_vec: Vec<ClaimId> = claim_ids.iter().cloned().collect();
+
+            // Apply pagination
+            let start = from_index as usize;
+            let end = std::cmp::min(start + limit as usize, claim_id_vec.len());
+
+            if start < end {
+                // Map each claim ID to its corresponding claim
+                claim_id_vec[start..end]
+                    .iter()
+                    .map(|claim_id| {
+                        let claim = self.claims_by_id.get(claim_id).unwrap(); // Unwrap is safe here because we know the claim_id exists
+                        format_claim(claim_id, claim)
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
         } else {
             vec![]
         }
