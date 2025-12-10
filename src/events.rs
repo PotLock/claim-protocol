@@ -56,13 +56,7 @@ pub fn log_tip_transferred_event(
     );
 }
 
-pub fn log_claim_created_event(
-    platform: &str,
-    handle: &str,
-    amount: U128,
-    token_type: &str,
-    tipper: &AccountId,
-) {
+pub fn log_claim_created_event(claim: &ClaimExternal) {
     env::log_str(
         format!(
             "{}{}",
@@ -73,11 +67,7 @@ pub fn log_claim_created_event(
                 "event": "claim_created",
                 "data": [
                     {
-                        "platform": platform,
-                        "handle": handle,
-                        "amount": amount,
-                        "token_type": token_type,
-                        "tipper": tipper,
+                        "claim": claim,
                     }
                 ]
             })
@@ -87,6 +77,7 @@ pub fn log_claim_created_event(
 }
 
 pub fn log_claim_processed_event(
+    claim_id: u64,
     platform: &str,
     handle: &str,
     amount: U128,
@@ -103,6 +94,7 @@ pub fn log_claim_processed_event(
                 "event": "claim_processed",
                 "data": [
                     {
+                        "claim_id": claim_id,
                         "platform": platform,
                         "handle": handle,
                         "amount": amount,
@@ -117,6 +109,7 @@ pub fn log_claim_processed_event(
 }
 
 pub fn log_tip_reclaimed_event(
+    claim_id: u64,
     platform: &str,
     handle: &str,
     amount: U128,
@@ -133,6 +126,7 @@ pub fn log_tip_reclaimed_event(
                 "event": "tip_reclaimed",
                 "data": [
                     {
+                        "claim_id": claim_id,
                         "platform": platform,
                         "handle": handle,
                         "amount": amount,

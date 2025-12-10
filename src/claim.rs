@@ -30,33 +30,13 @@ pub struct Claim {
 pub struct ClaimExternal {
     pub id: ClaimId,
     pub claim_type: String,
+    pub claim_token_symbol: String,
     pub amount: U128, // For NEAR and FTs. Ignored for NFTs
     pub tipper: AccountId,
     pub recipient: String,
     pub timestamp: u64,
     pub expires_at: u64,
     pub claimed: bool,
-}
-
-pub(crate) fn format_claim(claim_id: &ClaimId, claim: &Claim) -> ClaimExternal {
-    let claim_type = match &claim.claim_type {
-        ClaimType::Near => "Near".to_string(),
-        ClaimType::FungibleToken { contract_id } => format!("FT({})", contract_id),
-        ClaimType::NonFungibleToken {
-            contract_id,
-            token_id,
-        } => format!("NFT({}, {})", contract_id, token_id),
-    };
-    ClaimExternal {
-        id: claim_id.clone(),
-        claim_type,
-        amount: claim.amount.as_yoctonear().into(),
-        tipper: claim.tipper.clone(),
-        recipient: claim.recipient.clone(),
-        timestamp: claim.timestamp,
-        expires_at: claim.expires_at,
-        claimed: claim.claimed,
-    }
 }
 
 impl Claim {
@@ -126,6 +106,14 @@ impl Claim {
             ClaimType::Near => "NEAR",
             ClaimType::FungibleToken { .. } => "FT",
             ClaimType::NonFungibleToken { .. } => "NFT",
+        }
+    }
+
+    pub fn token_contract_id(&self) -> Option<&AccountId> {
+        match &self.claim_type {
+            ClaimType::Near => None,
+            ClaimType::FungibleToken { contract_id, .. } => Some(contract_id),
+            ClaimType::NonFungibleToken { contract_id, .. } => Some(contract_id),
         }
     }
 }

@@ -13,16 +13,16 @@ mod token;
 // mod utils;
 
 use crate::events::*;
-use claim::{format_claim, Claim, ClaimExternal, ClaimType};
+use claim::{Claim, ClaimExternal, ClaimType};
 use proof::ReclaimProof;
 use token::TokenInfo;
 
 type ClaimId = u64;
 
 /// Gas for FT transfers
-const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(10);
+const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(30);
 /// Gas for NFT transfers
-const GAS_FOR_NFT_TRANSFER: Gas = Gas::from_tgas(10);
+const GAS_FOR_NFT_TRANSFER: Gas = Gas::from_tgas(20);
 /// Gas for Reclaim Protocol verification
 const GAS_FOR_RECLAIM_VERIFY: Gas = Gas::from_tgas(27);
 /// Maximum time allowed between proof generation and submission (5 minutes)
@@ -65,6 +65,36 @@ impl SocialHandle {
 
     pub fn to_string(&self) -> String {
         format!("{}:{}", self.platform, self.handle)
+    }
+}
+
+pub(crate) fn format_claim(claim_id: &ClaimId, claim: &Claim, ct: &Contract) -> ClaimExternal {
+    let claim_type = match &claim.claim_type {
+        ClaimType::Near => "Near".to_string(),
+        ClaimType::FungibleToken { contract_id } => format!("FT({})", contract_id),
+        ClaimType::NonFungibleToken {
+            contract_id,
+            token_id,
+        } => format!("NFT({}, {})", contract_id, token_id),
+    };
+    let claim_token_contract = claim.token_contract_id();
+    let claim_token_symbol;
+    if let Some(claim_token_contract) = claim_token_contract {
+        let tk_info = ct.get_token_info(claim_token_contract.clone()).unwrap();
+        claim_token_symbol = tk_info.symbol
+    } else {
+        claim_token_symbol = "NEAR".to_string()
+    }
+    ClaimExternal {
+        id: *claim_id,
+        claim_type,
+        claim_token_symbol,
+        amount: claim.amount.as_yoctonear().into(),
+        tipper: claim.tipper.clone(),
+        recipient: claim.recipient.clone(),
+        timestamp: claim.timestamp,
+        expires_at: claim.expires_at,
+        claimed: claim.claimed,
     }
 }
 
@@ -161,7 +191,7 @@ impl Contract {
             .verify_proof(proof)
             .then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(5))
+                    .with_static_gas(Gas::from_tgas(20))
                     .on_link_account_verified(social_handle, env::predecessor_account_id()),
             )
     }
@@ -194,32 +224,41 @@ impl Contract {
 
         let social_handle = SocialHandle::new(platform, handle);
 
+        let claim = Claim::new_near(
+            env::predecessor_account_id(),
+            amount.as_yoctonear(),
+            social_handle.to_string(),
+        );
+
+        // Always store the claim first
+        let claim_id = self.store_claim(social_handle.clone(), claim);
+
         if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Direct transfer for linked accounts
-            log_tip_transferred_event(
-                &social_handle.platform,
-                &social_handle.handle,
-                amount.as_yoctonear().into(),
-                "NEAR",
-                &recipient,
+            // log_tip_transferred_event(
+            //     &social_handle.platform,
+            //     &social_handle.handle,
+            //     amount.as_yoctonear().into(),
+            //     "NEAR",
+            //     recipient,
+            // );
+            Promise::new(recipient.clone()).transfer(amount).then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(20))
+                    .on_transfer_complete(
+                        social_handle,
+                        "NEAR".to_string(),
+                        claim_id,
+                        recipient.clone(),
+                        None,
+                    ),
             );
-
-            PromiseOrValue::Promise(Promise::new(recipient.clone()).transfer(amount))
-        } else {
-            // Store as pending claim
-            let claim = Claim::new_near(
-                env::predecessor_account_id(),
-                amount.as_yoctonear(),
-                social_handle.to_string(),
-            );
-
-            self.store_claim(social_handle, claim);
-            PromiseOrValue::Value(())
         }
+        PromiseOrValue::Value(())
     }
 
     // Internal helper to store claims
-    fn store_claim(&mut self, social_handle: SocialHandle, claim: Claim) {
+    fn store_claim(&mut self, social_handle: SocialHandle, claim: Claim) -> ClaimId {
         let claim_id = self.next_claim_id;
         self.next_claim_id += 1;
         self.claims_by_id.insert(claim_id, claim.clone());
@@ -237,13 +276,9 @@ impl Contract {
 
         claim_ids.insert(claim_id);
 
-        log_claim_created_event(
-            &social_handle.platform,
-            &social_handle.handle,
-            claim.amount().into(),
-            claim.token_type(),
-            claim.tipper(),
-        );
+        log_claim_created_event(&format_claim(&claim_id, &claim, self));
+
+        claim_id
     }
 
     #[payable]
@@ -289,7 +324,7 @@ impl Contract {
                                 .transfer(claim.amount)
                                 .then(
                                     Self::ext(env::current_account_id())
-                                        .with_static_gas(Gas::from_tgas(5))
+                                        .with_static_gas(Gas::from_tgas(20))
                                         .on_transfer_complete(
                                             social_handle.clone(),
                                             "NEAR".to_string(),
@@ -306,12 +341,12 @@ impl Contract {
                                 .with_static_gas(Gas::from_tgas(XCC_GAS_DEFAULT))
                                 .ft_transfer(
                                     account_id.clone(),
-                                    claim.amount.to_string(),
+                                    claim.amount.as_yoctonear().to_string(),
                                     Some(format!("Claimed tip from {}", claim.tipper)),
                                 )
                                 .then(
                                     Self::ext(env::current_account_id())
-                                        .with_static_gas(Gas::from_tgas(5))
+                                        .with_static_gas(Gas::from_tgas(20))
                                         .on_transfer_complete(
                                             social_handle.clone(),
                                             "FT".to_string(),
@@ -337,7 +372,7 @@ impl Contract {
                                 )
                                 .then(
                                     Self::ext(env::current_account_id())
-                                        .with_static_gas(Gas::from_tgas(5))
+                                        .with_static_gas(Gas::from_tgas(20))
                                         .on_transfer_complete(
                                             social_handle.clone(),
                                             "NFT".to_string(),
@@ -381,6 +416,7 @@ impl Contract {
             // TODO: maybe merge this two events into one? since they emit same params?
             if reclaim_trf.is_some() {
                 log_tip_reclaimed_event(
+                    claim_id,
                     &social_handle.platform,
                     &social_handle.handle,
                     claim.amount().into(),
@@ -390,6 +426,7 @@ impl Contract {
             } else {
                 claim.claimed = true;
                 log_claim_processed_event(
+                    claim_id,
                     &social_handle.platform,
                     &social_handle.handle,
                     claim.amount().into(),
@@ -421,7 +458,7 @@ impl Contract {
                     .transfer(claim.amount)
                     .then(
                         Self::ext(env::current_account_id())
-                            .with_static_gas(Gas::from_tgas(5))
+                            .with_static_gas(Gas::from_tgas(20))
                             .on_transfer_complete(
                                 social_handle.clone(),
                                 "NEAR".to_string(),
@@ -436,12 +473,12 @@ impl Contract {
                         .with_static_gas(GAS_FOR_FT_TRANSFER)
                         .ft_transfer(
                             env::predecessor_account_id(),
-                            claim.amount.to_string(),
+                            claim.amount.as_yoctonear().to_string(),
                             Some("Reclaimed expired tip".to_string()),
                         )
                         .then(
                             Self::ext(env::current_account_id())
-                                .with_static_gas(Gas::from_tgas(5))
+                                .with_static_gas(Gas::from_tgas(20))
                                 .on_transfer_complete(
                                     social_handle.clone(),
                                     "FT".to_string(),
@@ -465,7 +502,7 @@ impl Contract {
                     )
                     .then(
                         Self::ext(env::current_account_id())
-                            .with_static_gas(Gas::from_tgas(5))
+                            .with_static_gas(Gas::from_tgas(20))
                             .on_transfer_complete(
                                 social_handle.clone(),
                                 "NFT".to_string(),
@@ -582,6 +619,14 @@ impl Contract {
 
         let amount_u128 = amount.0;
 
+        let claim = Claim::new_ft(
+            sender_id.clone(),
+            ft_contract_id.clone(),
+            amount_u128,
+            social_handle.to_string(),
+        );
+        let claim_id = self.store_claim(social_handle.clone(), claim);
+
         // If the handle is linked, forward the FT to the linked account
         if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Forward the tokens to the recipient
@@ -592,24 +637,18 @@ impl Contract {
                     recipient.clone(),
                     amount.0.to_string(),
                     Some(format!("Tip from {}", sender_id)),
+                )
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(Gas::from_tgas(70))
+                        .on_transfer_complete(
+                            social_handle,
+                            "FT".to_string(),
+                            claim_id,
+                            recipient.clone(),
+                            None,
+                        ),
                 );
-
-            log_tip_transferred_event(
-                &social_handle.platform,
-                &social_handle.handle,
-                amount_u128.into(),
-                "FT",
-                recipient,
-            );
-        } else {
-            // Store as a claim for later
-            let claim = Claim::new_ft(
-                sender_id,
-                ft_contract_id,
-                amount_u128,
-                social_handle.to_string(),
-            );
-            self.store_claim(social_handle, claim);
         }
 
         // Return 0 to keep all tokens in the contract
@@ -649,6 +688,14 @@ impl Contract {
             "Unsupported token"
         );
 
+        let claim = Claim::new_nft(
+            sender_id.clone(),
+            nft_contract_id.clone(),
+            token_id.clone(),
+            social_handle.to_string(),
+        );
+        let claim_id = self.store_claim(social_handle.clone(), claim);
+
         // If the handle is linked, forward the NFT to the linked account
         if let Some(recipient) = self.linked_accounts.get(&social_handle.to_string()) {
             // Forward the NFT to the recipient
@@ -660,24 +707,18 @@ impl Contract {
                     token_id.clone(),
                     None,
                     Some(format!("Tip from {}", sender_id)),
+                )
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(Gas::from_tgas(20))
+                        .on_transfer_complete(
+                            social_handle,
+                            "NFT".to_string(),
+                            claim_id,
+                            recipient.clone(),
+                            None,
+                        ),
                 );
-
-            log_tip_transferred_event(
-                &social_handle.platform,
-                &social_handle.handle,
-                0.into(), // NFTs don't have amount
-                "NFT",
-                recipient,
-            );
-        } else {
-            // Store as a claim for later
-            let claim = Claim::new_nft(
-                sender_id,
-                nft_contract_id,
-                token_id,
-                social_handle.to_string(),
-            );
-            self.store_claim(social_handle, claim);
         }
 
         // Return false to keep the NFT in the contract
@@ -767,7 +808,7 @@ impl Contract {
                     .filter_map(|claim_id| {
                         let claim = self.claims_by_id.get(claim_id)?;
                         if !claim.claimed && !claim.is_expired() {
-                            Some(format_claim(claim_id, claim))
+                            Some(format_claim(claim_id, claim, self))
                         } else {
                             None
                         }
@@ -846,7 +887,7 @@ impl Contract {
             .iter()
             .filter_map(|(claim_id, claim)| {
                 if claim.tipper() == &tipper {
-                    Some(format_claim(claim_id, claim))
+                    Some(format_claim(claim_id, claim, self))
                 } else {
                     None
                 }
@@ -886,7 +927,7 @@ impl Contract {
                     .iter()
                     .map(|claim_id| {
                         let claim = self.claims_by_id.get(claim_id).unwrap(); // Unwrap is safe here because we know the claim_id exists
-                        format_claim(claim_id, claim)
+                        format_claim(claim_id, claim, self)
                     })
                     .collect()
             } else {
