@@ -4,6 +4,7 @@ on:
 
 jobs:
   code-formatting:
+    timeout-minutes: 60
     name: Code Formatting
     runs-on: ubuntu-latest
     steps:
@@ -12,6 +13,7 @@ jobs:
       - run: cargo fmt --check
 
   code-linter:
+    timeout-minutes: 60
     name: Code Linter
     runs-on: ubuntu-latest
     steps:
@@ -23,6 +25,7 @@ jobs:
           cargo clippy --all-features --workspace --tests -- --warn clippy::all --warn clippy::nursery
 
   tests:
+    timeout-minutes: 60
     name: Tests
     runs-on: ubuntu-latest
     steps:

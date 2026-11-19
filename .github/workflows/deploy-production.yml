@@ -8,6 +8,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   deploy-staging:
+    timeout-minutes: 60
     name: Deploy to production
     needs: [test]
     runs-on: ubuntu-latest
